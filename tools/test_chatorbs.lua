@@ -313,6 +313,7 @@ local EMOTE_FIXTURES = {
     { "VICTORY", "/победа" }, { "NO", "/нет" },
     { "BLUSH", "/краснеть" }, { "SPIT", "/плюнуть" }, { "MOURN", "/скорбеть" },
     { "GIGGLE", "/хихикать" }, { "BECKON", "/поманить" }, { "CHARGE", "/вперёд" },
+    { "ROFL", "/покатываться" },
 }
 for i, pair in ipairs(EMOTE_FIXTURES) do
     env["EMOTE" .. (i * 3) .. "_TOKEN"] = pair[1]
@@ -322,9 +323,26 @@ end
 -- is what put a stray "Yes" in a Russian list.
 env["EMOTE500_TOKEN"], env["EMOTE500_CMD1"], env["EMOTE500_CMD2"] =
     "YES", "/yes", "/да"
+-- A token the client publishes no command for. DoEmote has nothing to play
+-- for it, so it must not reach the list at all - a button that does nothing
+-- when clicked is exactly what the player hit.
+env["EMOTE900_TOKEN"] = "SERVERONLY"
 
 local emotesPerformed = {}
-env.DoEmote = function(token) emotesPerformed[#emotesPerformed + 1] = token end
+local brokenEmotes = {}
+env.DoEmote = function(token)
+    if brokenEmotes[token] then
+        error("the client refuses to play " .. token, 0)
+    end
+    emotesPerformed[#emotesPerformed + 1] = token
+end
+
+-- The second path: the addon types the emote's own command instead.
+local slashRun = {}
+env.ChatEdit_SendText = function(box, history)
+    check(type(box) == "table", "ChatEdit_SendText got no edit box")
+    slashRun[#slashRun + 1] = box:GetText()
+end
 
 env.ChatTypeInfo = {
     SAY = { r = 1, g = 1, b = 1 }, YELL = { r = 1, g = .25, b = .25 },
@@ -558,10 +576,24 @@ local function visibleLabels()
 end
 
 local labels = visibleLabels()
-check(labels[1] == "Поздороваться", "first emote label is '" .. tostring(labels[1])
-      .. "', expected 'Поздороваться'")
-check(labels[11] == "Танцевать",
-      "eleventh emote label is '" .. tostring(labels[11]) .. "', expected 'Танцевать'")
+-- The short list opens on the emotes worth having under the cursor, and
+-- laughing is the whole first row.
+check(#labels == 24, "the short list shows " .. #labels .. " emotes, expected 24")
+check(labels[1] == "Смеяться", "first emote label is '" .. tostring(labels[1])
+      .. "', expected 'Смеяться'")
+check(labels[2] == "Валяться от смеха",
+      "second emote label is '" .. tostring(labels[2]) .. "'")
+check(labels[3] == "Хихикать", "third emote label is '" .. tostring(labels[3]) .. "'")
+check(labels[7] == "Танцевать",
+      "seventh emote label is '" .. tostring(labels[7]) .. "', expected 'Танцевать'")
+check(pickerFrame.more.shown and pickerFrame.more.text == "остальные эмоции — через поиск",
+      "the short list does not say where the other emotes are, it says '"
+      .. tostring(pickerFrame.more.text) .. "'")
+-- Short means short: there is nothing past the first screen to scroll to.
+pcall(pickerFrame.scripts.OnMouseWheel, pickerFrame, -1)
+check(visibleLabels()[1] == "Смеяться",
+      "the short list scrolled to '" .. tostring(visibleLabels()[1])
+      .. "', so it is not short at all")
 
 -- The search box: the mock types into it the way a player would.
 local search = pickerFrame.search
@@ -595,9 +627,29 @@ typeSearch("щщщ")
 check(#visibleLabels() == 0, "a search with no matches still showed cells")
 check(pickerFrame.empty.shown, "the empty-list notice did not appear")
 typeSearch("")
-check(#visibleLabels() == 24, "clearing the search did not restore the full list")
+check(#visibleLabels() == 24, "clearing the search did not restore the short list")
+check(visibleLabels()[1] == "Смеяться", "clearing the search lost the short list")
 
--- Every emote the client knows is reachable, not just a hardcoded handful.
+-- An emote the client gives no command for never reaches the list.
+typeSearch("serveronly")
+check(#visibleLabels() == 0,
+      "an emote with no slash command is in the list; clicking it would do nothing")
+typeSearch("")
+
+-- The full list is one command away, and holds everything the client knows.
+pcall(env.SlashCmdList["CHATORBS"], "emotes all")
+check(env.ChatOrbsDB.allEmotes == true, "'emotes all' did not switch the list")
+check(#visibleLabels() == 24, "the full list did not fill the grid")
+check(pickerFrame.more.text == "колесо — прокрутка",
+      "the full list does not offer scrolling, it says '"
+      .. tostring(pickerFrame.more.text) .. "'")
+pcall(pickerFrame.scripts.OnMouseWheel, pickerFrame, -1)
+check(visibleLabels()[1] ~= "Смеяться",
+      "the full list did not scroll past the first row")
+pcall(pickerFrame.scripts.OnMouseWheel, pickerFrame, 40)
+
+-- Every emote the client knows is reachable in the full list, not just a
+-- hardcoded handful.
 local reachable = {}
 for _ = 1, 40 do
     for _, label in ipairs(visibleLabels()) do reachable[label] = true end
@@ -610,6 +662,8 @@ check(count >= #EMOTE_FIXTURES,
       .. #EMOTE_FIXTURES)
 check(reachable["Кивнуть"] == true,
       "YES is not named in Russian")
+check(reachable["Serveronly"] ~= true and reachable["SERVERONLY"] ~= true,
+      "the command-less emote is reachable in the full list")
 check(reachable["Yes"] ~= true, "a stray English 'Yes' is still in the list")
 check(reachable["Да"] ~= true, "YES still shows the client's bare command")
 -- The client writes its emote commands as one glued word. Those must not be
@@ -621,8 +675,10 @@ check(reachable["Пожать плечами"] == true, "SHRUG is not named 'П�
 check(reachable["Наколени"] ~= true, "'Наколени' is still in the list")
 
 pcall(pickerFrame.scripts.OnMouseWheel, pickerFrame, 40)   -- back to the top
-check(visibleLabels()[1] == "Поздороваться",
-      "scrolling back up did not restore the top")
+check(visibleLabels()[1] == "Смеяться", "scrolling back up did not restore the top")
+pcall(env.SlashCmdList["CHATORBS"], "emotes short")
+check(env.ChatOrbsDB.allEmotes == false, "'emotes short' did not switch back")
+check(#visibleLabels() == 24, "the short list did not come back")
 
 -- Renaming must not cost the player the word the client uses: searching by
 -- the client's own command still finds the emote.
@@ -633,13 +689,45 @@ check(visibleLabels()[1] == "Отдать честь",
 typeSearch("salute")
 check(visibleLabels()[1] == "Отдать честь", "searching by the English token failed")
 typeSearch("")
-pcall(cells[11].scripts.OnEnter, cells[11])
-pcall(cells[11].scripts.OnLeave, cells[11])
-pcall(cells[11].scripts.OnClick, cells[11])
+-- Hovering a cell names the command it will run and the token behind it,
+-- so an emote that misbehaves can be reported without guesswork.
+pcall(cells[7].scripts.OnEnter, cells[7])
+check(tooltipLines[1] == "Танцевать", "the cell tooltip does not name the emote")
+check(tooltipLines[2] == "/танец",
+      "the cell tooltip does not show the client's command")
+check(tooltipLines[3] == "DANCE", "the cell tooltip does not show the token")
+pcall(cells[7].scripts.OnLeave, cells[7])
+pcall(cells[7].scripts.OnClick, cells[7])
 check(emotesPerformed[#emotesPerformed] == "DANCE",
       "clicking an emote performed '"
       .. tostring(emotesPerformed[#emotesPerformed]) .. "'")
 check(not pickerFrame.shown, "the picker stayed open after an emote was chosen")
+
+-- An emote the client will not play must not fail in silence: the addon
+-- falls back to the command and says what happened, once.
+brokenEmotes["DANCE"] = true
+local before = #chatLog
+editBox:SetText("недописанная строка")
+click(3)
+pcall(cells[7].scripts.OnClick, cells[7])
+check(slashRun[#slashRun] == "/танец",
+      "a refused emote did not fall back to its command, ran '"
+      .. tostring(slashRun[#slashRun]) .. "'")
+-- The fallback borrows the edit box, so whatever was half-typed in it has
+-- to be there afterwards.
+check(editBox.text == "недописанная строка",
+      "the fallback left '" .. tostring(editBox.text) .. "' in the edit box")
+check(#chatLog == before + 1,
+      "a refused emote produced " .. (#chatLog - before) .. " messages, expected 1")
+check(chatLog[#chatLog]:find("DANCE", 1, true) ~= nil
+      and chatLog[#chatLog]:find("танец", 1, true) ~= nil,
+      "the message does not say which emote broke and what was run instead: "
+      .. tostring(chatLog[#chatLog]))
+click(3)
+pcall(cells[7].scripts.OnClick, cells[7])
+check(#chatLog == before + 1, "the same broken emote was reported twice")
+check(slashRun[#slashRun] == "/танец", "the second click did not run the command")
+brokenEmotes["DANCE"] = nil
 
 -- Every Russian emote name, not just the ones the fixture covers: unique,
 -- capitalised once at the front, no stray spaces, short enough for the cell.

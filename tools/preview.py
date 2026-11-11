@@ -178,12 +178,15 @@ def backdrop(w, h, kind):
     return Image.fromarray(np.clip(base, 0, 255).astype(np.uint8), "RGB").convert("RGBA")
 
 
-EMOTES = ["Поздороваться", "Попрощаться", "Помахать", "Поклониться",
-          "Отдать честь", "Поблагодарить", "Аплодировать", "Ликовать",
-          "Смеяться", "Улыбнуться", "Танцевать", "Напрячь мускулы",
-          "Поцеловать", "Обнять", "Пожать плечами", "Просить прощения",
-          "Плакать", "Взреветь", "Сесть", "Встать на колени", "Лечь",
-          "Спать", "Указать", "Молиться"]
+# The short list, in the addon's own order: one screen, laughing first.
+EMOTES = ["Смеяться", "Валяться от смеха", "Хихикать",
+          "Улыбнуться", "Ликовать", "Аплодировать",
+          "Танцевать", "Поздороваться", "Помахать",
+          "Попрощаться", "Поблагодарить", "Поклониться",
+          "Кивнуть", "Отказаться", "Просить прощения",
+          "Поздравить", "Обнять", "Пожать плечами",
+          "Плакать", "Указать", "Сесть",
+          "Спать", "Напрячь мускулы", "Отдать честь"]
 COLS, ROWS, CELL_W, CELL_H, PAD, SEARCH_H = 3, 8, 144, 20, 10, 22
 HINT_H = 12                 # strip under the grid, so the hint clears the names
 
@@ -208,7 +211,7 @@ def render_picker():
     for i, label in enumerate(EMOTES[: COLS * ROWS]):
         col, row = i % COLS, i // COLS
         x, y = PAD + col * CELL_W, top + row * CELL_H
-        if i == 18:                                  # "Сесть", shown hovered
+        if i == 0:                                   # "Смеяться", shown hovered
             d.rectangle((x + 2, y, x + CELL_W - 2, y + CELL_H - 1),
                         fill=(255, 255, 255, 31))
             colour = (255, 217, 89, 255)
@@ -217,7 +220,7 @@ def render_picker():
         d.text((x + 8, y + CELL_H / 2 - 7), label, font=font, fill=colour)
 
     small = ImageFont.truetype(FONT_BOLD, 10)
-    hint = "колесо — прокрутка"
+    hint = "остальные эмоции — через поиск"
     hw = d.textbbox((0, 0), hint, font=small)[2]
     d.text((w - PAD - 2 - hw, h - PAD - HINT_H + 1), hint, font=small,
            fill=(128, 128, 140, 255))

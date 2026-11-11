@@ -69,6 +69,11 @@ local function T(ru, en)
     return en
 end
 
+local function Print(msg)
+    local frame = _G.DEFAULT_CHAT_FRAME
+    if frame then frame:AddMessage("|cffffd100ChatOrbs|r " .. msg) end
+end
+
 --- Byte length of the UTF-8 character starting at `i`.
 local function CharLen(s, i)
     local b = strbyte(s, i)
@@ -676,15 +681,23 @@ end
 -- ---------------------------------------------------------------------------
 -- Emotes
 -- ---------------------------------------------------------------------------
--- Emotes the list puts first. Everything the client knows follows them, so a
--- token missing here is still reachable; it just is not pinned to the top.
-local EMOTE_FAVOURITES = {
-    "HELLO", "BYE", "WAVE", "BOW", "SALUTE", "THANK",
-    "APPLAUD", "CHEER", "LAUGH", "SMILE", "DANCE", "FLEX",
-    "KISS", "HUG", "SHRUG", "SORRY", "CRY", "ROAR",
-    "SIT", "KNEEL", "LAYDOWN", "SLEEP", "POINT", "PRAY",
-    "READ", "DRINK", "EAT", "WELCOME", "CONGRATULATE", "RUDE",
-    "CHICKEN", "TRAIN", "VICTORY", "YES", "NO",
+-- The emotes worth having under the cursor. Exactly 24, which is one full
+-- screen of the list, so the short view needs no scrolling at all; laughing
+-- takes the whole first row. The order here is the order on screen, read
+-- left to right.
+--
+-- Everything else the client knows is one keystroke away: typing in the
+-- search box searches the lot, and /chatorbs emotes switches the list to
+-- the full set for good.
+local EMOTE_IMPORTANT = {
+    "LAUGH", "ROFL", "GIGGLE",
+    "SMILE", "CHEER", "APPLAUD",
+    "DANCE", "HELLO", "WAVE",
+    "BYE", "THANK", "BOW",
+    "YES", "NO", "SORRY",
+    "CONGRATULATE", "HUG", "SHRUG",
+    "CRY", "POINT", "SIT",
+    "SLEEP", "FLEX", "SALUTE",
 }
 
 local emoteList
@@ -894,14 +907,15 @@ local function ClientEmoteText(index)
     return best
 end
 
---- One list entry: the name shown, plus everything it can be found by.
+--- One list entry: the name shown, the command behind it, and everything
+--- the entry can be found by.
 local function EmoteEntry(index, token)
     local clientText = ClientEmoteText(index)
     local label = isRU and EMOTE_RU[token] or nil
     if not label then label = UpperFirst(clientText or strlower(token)) end
     local search = LowerText(label) .. " " .. strlower(token)
     if clientText then search = search .. " " .. LowerText(clientText) end
-    return { token = token, label = label, search = search }
+    return { token = token, label = label, search = search, command = clientText }
 end
 
 --- Every emote the client knows: the favourites first, then the rest in
@@ -915,17 +929,23 @@ local function BuildEmoteList()
         local token = _G["EMOTE" .. i .. "_TOKEN"]
         if type(token) == "string" and token ~= "" and not byToken[token] then
             local entry = EmoteEntry(i, token)
-            byToken[token] = entry
-            found[#found + 1] = entry
+            -- An emote the client publishes no slash command for is one the
+            -- player cannot type either, and DoEmote has nothing to play for
+            -- it. Those were the buttons that did nothing when clicked.
+            if entry.command then
+                byToken[token] = entry
+                found[#found + 1] = entry
+            end
         end
     end
 
     emoteList = {}
     local used = {}
-    for _, token in ipairs(EMOTE_FAVOURITES) do
+    for _, token in ipairs(EMOTE_IMPORTANT) do
         local entry = byToken[token]
         if entry and not used[entry] then
             used[entry] = true
+            entry.important = true
             emoteList[#emoteList + 1] = entry
         end
     end
@@ -939,10 +959,11 @@ local function BuildEmoteList()
 
     -- A client with no emote globals at all still gets a usable list.
     if #emoteList == 0 then
-        for _, token in ipairs(EMOTE_FAVOURITES) do
+        for _, token in ipairs(EMOTE_IMPORTANT) do
             local label = (isRU and EMOTE_RU[token]) or UpperFirst(strlower(token))
             emoteList[#emoteList + 1] = {
                 token = token, label = label, search = LowerText(label),
+                important = true,
             }
         end
     end
@@ -957,6 +978,7 @@ local EMOTE_HINT_H = 12
 
 local picker, pickerBlocker
 local pickerCells, pickerMatches, pickerOffset = {}, {}, 0
+local pickerShort = true        -- showing the short list, not a search result
 
 local function HidePicker()
     if picker then picker:Hide() end
@@ -985,26 +1007,90 @@ local function RefreshPicker()
     end
 
     if #pickerMatches == 0 then picker.empty:Show() else picker.empty:Hide() end
-    if limit > 0 then picker.more:Show() else picker.more:Hide() end
+    if limit > 0 then
+        picker.more:SetText(T("колесо — прокрутка", "scroll for more"))
+        picker.more:Show()
+    elseif pickerShort then
+        picker.more:SetText(T("остальные эмоции — через поиск",
+                              "search for the rest"))
+        picker.more:Show()
+    else
+        picker.more:Hide()
+    end
 end
 
 local function FilterPicker(query)
     local all = BuildEmoteList()
     pickerMatches = {}
     query = LowerText(strtrim(query or ""))
+    -- With nothing typed the list shows the short set; typing searches
+    -- everything the client knows, so nothing is out of reach.
+    pickerShort = query == "" and not (ChatOrbsDB and ChatOrbsDB.allEmotes)
     for _, entry in ipairs(all) do
-        if query == "" or entry.search:find(query, 1, true) then
-            pickerMatches[#pickerMatches + 1] = entry
+        local matches
+        if pickerShort then
+            matches = entry.important
+        else
+            matches = query == "" or entry.search:find(query, 1, true)
         end
+        if matches then pickerMatches[#pickerMatches + 1] = entry end
     end
     pickerOffset = 0
     RefreshPicker()
 end
 
+local reportedEmote = {}
+
+--- Runs a slash command the way typing it would.
+local function RunSlashCommand(text)
+    local editBox = GetEditBox()
+    if not editBox or not editBox.SetText then return false end
+    local send = ChatFunc("ChatEdit_SendText", "SendText")
+    if not send then return false end
+    local saved = editBox.GetText and editBox:GetText() or ""
+    editBox:SetText(text)
+    local ok = pcall(send, editBox, 0)
+    editBox:SetText(saved or "")
+    return ok and true or false
+end
+
+--- Performs an emote, and says so when it cannot.
+---
+--- DoEmote used to be called inside a bare pcall, so a click on an emote the
+--- client would not play did nothing and said nothing. Now the slash command
+--- the client publishes for that emote is tried as a second path, and the
+--- first failure is reported - once per emote, so a stuck one does not fill
+--- the chat frame.
 local function PerformEmote(entry)
     if not entry then return end
     HidePicker()
-    if type(_G.DoEmote) == "function" then pcall(DoEmote, entry.token) end
+
+    local failure
+    if type(_G.DoEmote) == "function" then
+        local ok, err = pcall(DoEmote, entry.token)
+        if ok then return end
+        failure = tostring(err)
+    else
+        failure = T("в этом клиенте нет DoEmote", "this client has no DoEmote")
+    end
+
+    local command = entry.command and ("/" .. entry.command) or nil
+    local recovered = command ~= nil and RunSlashCommand(command)
+    if reportedEmote[entry.token] then return end
+    reportedEmote[entry.token] = true
+
+    local what = T("эмоция «", "emote '") .. entry.label
+                 .. T("» (", "' (") .. entry.token .. "): " .. failure
+    if recovered then
+        Print(what .. T(". Выполнил командой ", ". Ran ") .. command
+              .. T(".", " instead."))
+    elseif command then
+        Print(what .. T(". Команда ", ". ") .. command
+              .. T(" тоже не прошла.", " did not work either."))
+    else
+        Print(what .. T(". Клиент не даёт для неё команды.",
+                        ". The client offers no command for it."))
+    end
 end
 
 local function CreatePicker()
@@ -1106,8 +1192,25 @@ local function CreatePicker()
         text:SetTextColor(0.88, 0.88, 0.92)
         cell.text = text
 
-        cell:SetScript("OnEnter", function(self) self.text:SetTextColor(1, 0.85, 0.35) end)
-        cell:SetScript("OnLeave", function(self) self.text:SetTextColor(0.88, 0.88, 0.92) end)
+        cell:SetScript("OnEnter", function(self)
+            self.text:SetTextColor(1, 0.85, 0.35)
+            -- Name, the command it runs, and the token behind it: enough to
+            -- report an emote that misbehaves without guessing which it was.
+            local entry = self.entry
+            if entry and _G.GameTooltip then
+                GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+                GameTooltip:SetText(entry.label, 1, 0.82, 0)
+                if entry.command then
+                    GameTooltip:AddLine("/" .. entry.command, 0.7, 0.7, 0.75, true)
+                end
+                GameTooltip:AddLine(entry.token, 0.45, 0.45, 0.5, true)
+                GameTooltip:Show()
+            end
+        end)
+        cell:SetScript("OnLeave", function(self)
+            self.text:SetTextColor(0.88, 0.88, 0.92)
+            if _G.GameTooltip then GameTooltip:Hide() end
+        end)
         cell:SetScript("OnClick", function(self) PerformEmote(self.entry) end)
         pickerCells[index] = cell
     end
@@ -1555,11 +1658,6 @@ end
 -- ---------------------------------------------------------------------------
 -- Slash commands
 -- ---------------------------------------------------------------------------
-local function Print(msg)
-    local frame = _G.DEFAULT_CHAT_FRAME
-    if frame then frame:AddMessage("|cffffd100ChatOrbs|r " .. msg) end
-end
-
 local function OnOff(value)
     if value then return T("вкл", "on") end
     return T("выкл", "off")
@@ -1568,8 +1666,15 @@ end
 local function PrintHelp()
     Print(T("доступные команды:", "available commands:"))
     local sticky = ChatOrbsDB and ChatOrbsDB.sticky
+    local full = ChatOrbsDB and ChatOrbsDB.allEmotes
     local lines = {
         { "/chatorbs",         T("список команд.", "show this list.") },
+        { "/chatorbs emotes",  T("список эмоций: короткий (нужное) или полный "
+                                 .. "(всё, что знает клиент). Сейчас: "
+                                 .. (full and "полный" or "короткий") .. ".",
+                                 "emote list: short (the useful ones) or full "
+                                 .. "(everything the client knows). Now: "
+                                 .. (full and "full" or "short") .. ".") },
         { "/chatorbs sticky",  T("залипание канала: после Enter строка ввода "
                                  .. "снова открывается в том же канале (сейчас: "
                                  .. OnOff(sticky) .. ").",
@@ -1649,6 +1754,25 @@ local function HandleSlash(input)
         ChatOrbs:ApplyVisibility()
         Print(T("панель показана.", "dock shown."))
 
+    elseif command == "emotes" then
+        if argument == "all" or argument == "все" or argument == "полный" then
+            ChatOrbsDB.allEmotes = true
+        elseif argument == "short" or argument == "короткий" then
+            ChatOrbsDB.allEmotes = false
+        else
+            ChatOrbsDB.allEmotes = not ChatOrbsDB.allEmotes
+        end
+        if picker and picker:IsShown() then
+            FilterPicker(picker.search:GetText() or "")
+        end
+        if ChatOrbsDB.allEmotes then
+            Print(T("список эмоций: полный — всё, что знает клиент.",
+                    "emote list: full - everything the client knows."))
+        else
+            Print(T("список эмоций: короткий. Остальные находятся поиском.",
+                    "emote list: short. The rest are found by searching."))
+        end
+
     elseif command == "sticky" then
         if argument == "on" or argument == "вкл" then
             ChatOrbsDB.sticky = true
@@ -1696,6 +1820,8 @@ local DEFAULTS = {
     -- On by default: this is the behaviour the dock is for, and /chatorbs
     -- sticky turns it off again.
     sticky = true,
+    -- The short emote list by default; /chatorbs emotes shows the lot.
+    allEmotes = false,
 }
 
 local events = CreateFrame("Frame")
