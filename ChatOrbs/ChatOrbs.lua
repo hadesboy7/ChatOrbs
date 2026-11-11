@@ -682,21 +682,21 @@ end
 -- Emotes
 -- ---------------------------------------------------------------------------
 -- The emotes worth having under the cursor. Exactly 24, which is one full
--- screen of the list, so the short view needs no scrolling at all; laughing
--- takes the whole first row. The order here is the order on screen, read
--- left to right.
+-- screen of the list, so the short view needs no scrolling at all. Сесть
+-- comes first because that is the one reached for most, then laughing. The
+-- order here is the order on screen, read left to right.
 --
 -- Everything else the client knows is one keystroke away: typing in the
 -- search box searches the lot, and /chatorbs emotes switches the list to
 -- the full set for good.
 local EMOTE_IMPORTANT = {
-    "LAUGH", "ROFL", "GIGGLE",
-    "SMILE", "CHEER", "APPLAUD",
-    "DANCE", "HELLO", "WAVE",
-    "BYE", "THANK", "BOW",
-    "YES", "NO", "SORRY",
-    "CONGRATULATE", "HUG", "SHRUG",
-    "CRY", "POINT", "SIT",
+    "SIT", "LAUGH", "ROFL",
+    "GIGGLE", "SMILE", "CHEER",
+    "APPLAUD", "DANCE", "HELLO",
+    "WAVE", "BYE", "THANK",
+    "BOW", "YES", "NO",
+    "SORRY", "CONGRATULATE", "HUG",
+    "SHRUG", "CRY", "POINT",
     "SLEEP", "FLEX", "SALUTE",
 }
 
