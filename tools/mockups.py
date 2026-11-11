@@ -16,22 +16,43 @@ from PIL import Image, ImageDraw, ImageFilter, ImageFont
 HERE = os.path.dirname(os.path.abspath(__file__))
 SS = 6                      # supersampling factor for antialiasing
 
-FONT_BOLD = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
-FONT_REG = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
 
-# Chat targets as they appear for a grouped character in a guild, ruRU.
+def find_font(*names):
+    """DejaVu, wherever this machine keeps it. The hardcoded Linux path only
+    ever worked in a container; matplotlib ships the same files."""
+    roots = ["/usr/share/fonts/truetype/dejavu",
+             "/usr/share/fonts/dejavu",
+             "/Library/Fonts", os.path.expanduser("~/Library/Fonts")]
+    try:
+        import matplotlib
+        roots.insert(0, os.path.join(matplotlib.get_data_path(), "fonts", "ttf"))
+    except Exception:
+        pass                                  # not installed: the rest still work
+    for name in names:
+        for root in roots:
+            path = os.path.join(root, name)
+            if os.path.exists(path):
+                return path
+    raise SystemExit("DejaVu font not found; looked in: " + ", ".join(roots))
+
+
+FONT_BOLD = find_font("DejaVuSans-Bold.ttf")
+FONT_REG = find_font("DejaVuSans.ttf")
+
+# Chat targets as they appear for a grouped character in a guild, ruRU, in the
+# order the addon builds them.
 CHANNELS = [
-    ("С", "Сказать",   (1.00, 1.00, 1.00)),
-    ("К", "Крик",      (1.00, 0.25, 0.25)),
-    ("Э", "Эмоция",    (1.00, 0.50, 0.25)),
-    ("Ш", "Шепот",     (1.00, 0.50, 1.00)),
-    ("Г", "Группа",    (0.67, 0.67, 1.00)),
-    ("Р", "Рейд",      (1.00, 0.50, 0.00)),
-    ("Г", "Гильдия",   (0.25, 1.00, 0.25)),
-    ("О", "Общий",     (1.00, 0.75, 0.75)),
-    ("Т", "Торговля",  (1.00, 0.75, 0.75)),
+    ("С",  "Сказать",   (1.00, 1.00, 1.00)),
+    ("Гр", "Группа",    (0.67, 0.67, 1.00)),
+    ("К",  "Крик",      (1.00, 0.25, 0.25)),
+    ("Э",  "Эмоция",    (1.00, 0.50, 0.25)),
+    ("Ш",  "Шепот",     (1.00, 0.50, 1.00)),
+    ("Б",  "Шепот B.net", (0.00, 1.00, 0.96)),
+    ("Ги", "Гильдия",   (0.25, 1.00, 0.25)),
+    ("1",  "Общий",     (1.00, 0.75, 0.75)),
+    ("2",  "Торговля",  (1.00, 0.75, 0.75)),
 ]
-EMOTE_INDEX = 2             # the one that opens a picker
+EMOTE_INDEX = 3             # the one that opens a picker
 HOVER_INDEX = 1             # shown in its hover state
 
 

@@ -53,6 +53,11 @@ local function newRegion(kind, layer)
         r.GetTexture = function(self) return self.texture end
         r.SetColorTexture = function(self, cr, cg, cb, ca)
             self.texture, self.colorTexture = nil, { cr, cg, cb, ca }
+            -- The client folds the colour into the vertex colour, so a
+            -- SetVertexColor made earlier is lost. The mock does the same,
+            -- otherwise texture-free mode looks coloured here and white in
+            -- the game.
+            self.color = { cr, cg, cb }
         end
         r.SetBlendMode = function(self, mode) self.blend = mode end
         r.SetTexCoord = function(self, ...) self.coords = { ... } end
@@ -72,6 +77,10 @@ local function newRegion(kind, layer)
         r.SetJustifyH = function(self, j) self.justify = j end
         r.SetWordWrap = function(self, v) self.wordWrap = v end
         r.SetTextColor = function(self, cr, cg, cb) self.color = { cr, cg, cb } end
+        r.SetShadowColor = function(self, cr, cg, cb, ca)
+            self.shadowColor = { cr, cg, cb, ca }
+        end
+        r.SetShadowOffset = function(self, x, y) self.shadowOffset = { x, y } end
         r.SetText = function(self, t) self.text = t end
         r.GetText = function(self) return self.text end
     end
@@ -419,8 +428,9 @@ local function captions()
 end
 
 -- Solo, guildless, four numbered channels: Say Yell Emote Whisper BnWhisper
--- plus the channel initials.
-local expected = "С К Э Ш Ш О Т О Т"
+-- plus the channel numbers. Party sits second whenever there is one, so the
+-- solo row runs straight from Say to Yell.
+local expected = "С К Э Ш Б 1 2 3 4"
 check(captions() == expected,
       "captions were '" .. captions() .. "', expected '" .. expected .. "'")
 
@@ -548,9 +558,10 @@ local function visibleLabels()
 end
 
 local labels = visibleLabels()
-check(labels[1] == "Привет", "first emote label is '" .. tostring(labels[1])
-      .. "', expected 'Привет' (Cyrillic uppercasing)")
-check(labels[11] == "Танец", "eleventh emote label is '" .. tostring(labels[11]) .. "'")
+check(labels[1] == "Поздороваться", "first emote label is '" .. tostring(labels[1])
+      .. "', expected 'Поздороваться'")
+check(labels[11] == "Танцевать",
+      "eleventh emote label is '" .. tostring(labels[11]) .. "', expected 'Танцевать'")
 
 -- The search box: the mock types into it the way a player would.
 local search = pickerFrame.search
@@ -597,12 +608,31 @@ for _ in pairs(reachable) do count = count + 1 end
 check(count >= #EMOTE_FIXTURES,
       "only " .. count .. " emotes were reachable by scrolling, expected at least "
       .. #EMOTE_FIXTURES)
-check(reachable["Да"] == true,
-      "YES shows as the English '/yes' instead of the Russian command")
+check(reachable["Кивнуть"] == true,
+      "YES is not named in Russian")
 check(reachable["Yes"] ~= true, "a stray English 'Yes' is still in the list")
+check(reachable["Да"] ~= true, "YES still shows the client's bare command")
+-- The client writes its emote commands as one glued word. Those must not be
+-- what the list shows.
+check(reachable["Отдатьчесть"] ~= true, "'Отдатьчесть' is still in the list")
+check(reachable["Отдать честь"] == true, "SALUTE is not named 'Отдать честь'")
+check(reachable["Пожатьплечами"] ~= true, "'Пожатьплечами' is still in the list")
+check(reachable["Пожать плечами"] == true, "SHRUG is not named 'Пожать плечами'")
+check(reachable["Наколени"] ~= true, "'Наколени' is still in the list")
 
 pcall(pickerFrame.scripts.OnMouseWheel, pickerFrame, 40)   -- back to the top
-check(visibleLabels()[1] == "Привет", "scrolling back up did not restore the top")
+check(visibleLabels()[1] == "Поздороваться",
+      "scrolling back up did not restore the top")
+
+-- Renaming must not cost the player the word the client uses: searching by
+-- the client's own command still finds the emote.
+typeSearch("отдатьчесть")
+check(visibleLabels()[1] == "Отдать честь",
+      "searching by the client's own wording gave '"
+      .. tostring(visibleLabels()[1]) .. "'")
+typeSearch("salute")
+check(visibleLabels()[1] == "Отдать честь", "searching by the English token failed")
+typeSearch("")
 pcall(cells[11].scripts.OnEnter, cells[11])
 pcall(cells[11].scripts.OnLeave, cells[11])
 pcall(cells[11].scripts.OnClick, cells[11])
@@ -610,6 +640,52 @@ check(emotesPerformed[#emotesPerformed] == "DANCE",
       "clicking an emote performed '"
       .. tostring(emotesPerformed[#emotesPerformed]) .. "'")
 check(not pickerFrame.shown, "the picker stayed open after an emote was chosen")
+
+-- Every Russian emote name, not just the ones the fixture covers: unique,
+-- capitalised once at the front, no stray spaces, short enough for the cell.
+local names = env.ChatOrbs and env.ChatOrbs.emoteNames
+check(type(names) == "table", "the addon does not expose its emote names")
+
+local function charCount(s)
+    local count, i = 0, 1
+    while i <= #s do
+        local b = s:byte(i)
+        i = i + ((b >= 0xF0 and 4) or (b >= 0xE0 and 3) or (b >= 0xC0 and 2) or 1)
+        count = count + 1
+    end
+    return count
+end
+
+local nameSeen, audited = {}, 0
+for token, name in pairs(names or {}) do
+    audited = audited + 1
+    check(type(token) == "string" and token:match("^[A-Z][A-Z0-9_]*$") ~= nil,
+          "emote token '" .. tostring(token) .. "' is not a bare token")
+    check(type(name) == "string" and name ~= "",
+          "emote " .. tostring(token) .. " has no name")
+    if type(name) == "string" then
+        check(not name:find("^%s") and not name:find("%s$") and not name:find("  "),
+              "emote name '" .. name .. "' has a stray space")
+        check(not nameSeen[name], "two emotes are both called '" .. name
+              .. "' (" .. tostring(nameSeen[name]) .. ", " .. tostring(token) .. ")")
+        nameSeen[name] = token
+        local b1, b2 = name:byte(1), name:byte(2)
+        check(b1 == 0xD0 and b2 and b2 >= 0x90 and b2 <= 0xAF,
+              "emote name '" .. name .. "' does not start with a Cyrillic capital")
+        local inner, i = false, 3
+        while i <= #name do
+            local c1, c2 = name:byte(i), name:byte(i + 1)
+            if c1 == 0xD0 and c2 and c2 >= 0x90 and c2 <= 0xAF then inner = true end
+            i = i + ((c1 >= 0xC0) and 2 or 1)
+        end
+        check(not inner, "emote name '" .. name .. "' has a capital letter inside")
+        -- 17 characters is what a 144px column holds at this font size;
+        -- anything longer was cut off mid-word in the list.
+        check(charCount(name) <= 17,
+              "emote name '" .. name .. "' is too long for the cell")
+    end
+end
+check(audited >= 150, "only " .. audited .. " emote names are listed")
 
 -- Right-clicking the emote orb opens the edit box instead.
 editBox.text = nil
@@ -664,14 +740,31 @@ check(env.ChatOrbsDB.x and math.abs(env.ChatOrbsDB.x - 310) < 1
 
 -- State changes add and remove orbs.
 world.inGroup = true; fire("GROUP_ROSTER_UPDATE")
-check(captions() == "С К Э Ш Ш Г О Т О Т",
+check(captions() == "С Гр К Э Ш Б 1 2 3 4",
       "joining a party gave '" .. captions() .. "'")
+-- Группа is second, right after Сказать, which is the order asked for.
+check(buttons()[2].entry.key == "PARTY", "the party orb is not the second one")
+check(buttons()[3].entry.key == "YELL", "Крик is not third once there is a party")
+-- Two-character captions are drawn a point smaller so they fit the orb.
+check(captionOf(buttons()[2]).font and captionOf(buttons()[2]).font[2] == 10,
+      "the caption Гр is not drawn smaller than a single letter")
+check(captionOf(buttons()[1]).font and captionOf(buttons()[1]).font[2] == 12,
+      "the single-letter caption С changed size")
+check(captionOf(buttons()[1]).shadowColor ~= nil,
+      "the caption has no shadow, so a dark glyph has nothing to stand against")
 world.inRaid = true; fire("GROUP_ROSTER_UPDATE")
-check(captions() == "С К Э Ш Ш Г Р О Т О Т",
+check(captions() == "С Гр К Э Ш Б Р 1 2 3 4",
       "joining a raid gave '" .. captions() .. "'")
 world.inGuild = true; fire("PLAYER_GUILD_UPDATE")
-check(captions() == "С К Э Ш Ш Г Р Г О О Т О Т",
+check(captions() == "С Гр К Э Ш Б Р Ги Оф 1 2 3 4",
       "joining a guild gave '" .. captions() .. "'")
+-- No two orbs may read the same, or the row cannot be told apart at a glance.
+local capSeen = {}
+for _, b in ipairs(buttons()) do
+    local text = captionOf(b).text
+    check(not capSeen[text], "two orbs are both captioned '" .. tostring(text) .. "'")
+    capSeen[text] = true
+end
 world.inGroup, world.inRaid, world.inGuild = false, false, false
 fire("GROUP_ROSTER_UPDATE"); fire("PLAYER_GUILD_UPDATE")
 check(captions() == expected, "leaving everything did not restore the base row")
@@ -680,7 +773,7 @@ check(captions() == expected, "leaving everything did not restore the base row")
 local savedChannels = world.channels
 world.channels = {}
 fire("CHANNEL_UI_UPDATE")
-check(captions() == "С К Э Ш Ш", "with no channels the row was '" .. captions() .. "'")
+check(captions() == "С К Э Ш Б", "with no channels the row was '" .. captions() .. "'")
 click(1)
 world.channels = savedChannels
 fire("CHANNEL_UI_UPDATE")
@@ -688,7 +781,7 @@ fire("CHANNEL_UI_UPDATE")
 -- Old-style GetChannelList returning (id, name) pairs still parses.
 env.GetChannelList = function() return 1, "Общий", 2, "Торговля" end
 fire("CHANNEL_UI_UPDATE")
-check(captions() == "С К Э Ш Ш О Т", "pair-style channel list gave '" .. captions() .. "'")
+check(captions() == "С К Э Ш Б 1 2", "pair-style channel list gave '" .. captions() .. "'")
 env.GetChannelList = function()
     local out = {}
     for _, c in ipairs(world.channels) do
@@ -742,12 +835,64 @@ check(math.abs(env.ChatOrbsDB.y * dock.scale % 1) < 1e-6,
 check(env.ChatOrbsDB.x ~= nil, "reset did not store a fresh position")
 run("nonsense")
 
+-- Sticky channel: write to the party, press Enter, and the edit box has to
+-- come back to the party rather than to Say.
+world.inGroup = true; fire("GROUP_ROSTER_UPDATE")
+check(env.ChatOrbsDB.sticky == true, "the sticky option is not on by default")
+check(env.ChatTypeInfo.PARTY.sticky == 1, "the party chat type was not made sticky")
+check(env.ChatTypeInfo.SAY.sticky == 1, "say was not made sticky")
+check(env.ChatTypeInfo.YELL.sticky ~= 1,
+      "yell was made sticky, which is how a conversation ends up yelled")
+check(env.ChatTypeInfo.EMOTE.sticky ~= 1, "emote was made sticky")
+
+editBox.attributes.stickyType = nil
+click(2)
+check(editBox.attributes.chatType == "PARTY", "orb 2 is not Группа")
+check(editBox.attributes.stickyType == "PARTY",
+      "clicking Группа left stickyType at '"
+      .. tostring(editBox.attributes.stickyType) .. "'")
+click(3)
+check(editBox.attributes.chatType == "YELL", "orb 3 is not Крик")
+check(editBox.attributes.stickyType == "PARTY",
+      "a yell overwrote the sticky channel")
+click(7)
+check(editBox.attributes.stickyType == "CHANNEL",
+      "a numbered channel did not stick")
+
+run("sticky off")
+check(env.ChatOrbsDB.sticky == false, "'sticky off' did not clear the flag")
+check(env.ChatTypeInfo.PARTY.sticky ~= 1,
+      "turning the option off did not put the game's own flags back")
+editBox.attributes.stickyType = nil
+click(2)
+check(editBox.attributes.stickyType == nil,
+      "the option is off and the channel stuck anyway")
+run("sticky")
+check(env.ChatOrbsDB.sticky == true, "bare 'sticky' did not toggle back on")
+check(env.ChatTypeInfo.PARTY.sticky == 1, "toggling back on did not set the flag")
+
+-- The marker has to follow its own orb when the row is rebuilt under it.
+world.inGroup = false; fire("GROUP_ROSTER_UPDATE")
+click(7)                                    -- channel 2, seventh orb when solo
+check(buttons()[7].entry.key == "CHANNEL2", "orb 7 is not channel 2")
+world.inGroup = true; fire("GROUP_ROSTER_UPDATE")
+check(buttons()[8].entry.key == "CHANNEL2",
+      "channel 2 did not shift along when the party orb appeared")
+check(marker.points.CENTER and marker.points.CENTER.rel == buttons()[8],
+      "the marker stayed under the orb that moved out from under it")
+world.inGroup = false; fire("GROUP_ROSTER_UPDATE")
+
 -- Texture-free fallback mode.
 run("flat")
 check(env.ChatOrbsDB.flat == true, "flat did not set the flag")
-local orbAfter = textureOf(buttons()[1], "ARTWORK")
+-- Checked on Крик, not on Сказать: a white orb cannot tell a kept colour from
+-- a lost one.
+local orbAfter = textureOf(buttons()[2], "ARTWORK")
+check(buttons()[2].entry.key == "YELL", "orb 2 is not Крик")
 check(orbAfter.colorTexture ~= nil, "flat mode left a texture file on the orb")
-check(orbAfter.color and orbAfter.color[1] == 1, "flat mode lost the orb colour")
+check(orbAfter.color and math.abs(orbAfter.color[1] - 1) < 1e-9
+      and math.abs(orbAfter.color[2] - 0.25) < 1e-9,
+      "flat mode lost the channel colour")
 click(1)
 run("flat")
 check(env.ChatOrbsDB.flat == false, "flat did not toggle back")

@@ -20,14 +20,36 @@ TEX = os.path.join(HERE, os.pardir, "ChatOrbs", "Textures")
 
 ORB, STEP, INNER, CORNER = 20, 26, 6, 12
 MARKER = (14, 4)
-FONT_BOLD = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
 
+def find_font(*names):
+    """DejaVu, wherever this machine keeps it. The hardcoded Linux path only
+    ever worked in a container; matplotlib ships the same files."""
+    roots = ["/usr/share/fonts/truetype/dejavu",
+             "/usr/share/fonts/dejavu",
+             "/Library/Fonts", os.path.expanduser("~/Library/Fonts")]
+    try:
+        import matplotlib
+        roots.insert(0, os.path.join(matplotlib.get_data_path(), "fonts", "ttf"))
+    except Exception:
+        pass                                  # not installed: the rest still work
+    for name in names:
+        for root in roots:
+            path = os.path.join(root, name)
+            if os.path.exists(path):
+                return path
+    raise SystemExit("DejaVu font not found; looked in: " + ", ".join(roots))
+
+
+FONT_BOLD = find_font("DejaVuSans-Bold.ttf")
+
+# The row of a grouped character in a guild, in the order the addon builds it:
+# Сказать, Группа, Крик, then the rest, then the numbered channels.
 CHANNELS = [
-    ("С", (1.00, 1.00, 1.00)), ("К", (1.00, 0.25, 0.25)),
-    ("Э", (1.00, 0.50, 0.25)), ("Ш", (1.00, 0.50, 1.00)),
-    ("Г", (0.67, 0.67, 1.00)), ("Р", (1.00, 0.50, 0.00)),
-    ("Г", (0.25, 1.00, 0.25)), ("О", (1.00, 0.75, 0.75)),
-    ("Т", (1.00, 0.75, 0.75)),
+    ("С", (1.00, 1.00, 1.00)), ("Гр", (0.67, 0.67, 1.00)),
+    ("К", (1.00, 0.25, 0.25)), ("Э", (1.00, 0.50, 0.25)),
+    ("Ш", (1.00, 0.50, 1.00)), ("Б", (0.00, 1.00, 0.96)),
+    ("Ги", (0.25, 1.00, 0.25)), ("1", (1.00, 0.75, 0.75)),
+    ("2", (1.00, 0.75, 0.75)),
 ]
 HOVER, ACTIVE = 1, 0
 
@@ -111,7 +133,7 @@ def render_dock(w, h):
         size = ORB + (2 if hovered else 0)
 
         if hovered:
-            g = 34
+            g = 30
             blend(out, resize(glow, g, g), cx - g // 2, cy - g // 2,
                   mode="ADD", tint=colour, alpha=0.5)
 
@@ -130,10 +152,13 @@ def render_dock(w, h):
 def draw_letters(img, box):
     ox, oy, _dw, _dh = box
     d = ImageDraw.Draw(img)
-    font = ImageFont.truetype(FONT_BOLD, 11)
+    fonts = {1: ImageFont.truetype(FONT_BOLD, 11),
+             2: ImageFont.truetype(FONT_BOLD, 9)}
     for i, (letter, colour) in enumerate(CHANNELS):
         cx = ox + INNER + i * STEP + ORB // 2
         cy = oy + INNER + ORB // 2
+        # Two-character captions are drawn a point smaller, as in the addon.
+        font = fonts[min(2, len(letter))]
         l, t, r, b = d.textbbox((0, 0), letter, font=font)
         d.text((cx - (r + l) / 2, cy - (b + t) / 2 - 0.5), letter, font=font,
                fill=tuple(int(c * 255 * 0.20) for c in colour) + (250,))
@@ -153,19 +178,21 @@ def backdrop(w, h, kind):
     return Image.fromarray(np.clip(base, 0, 255).astype(np.uint8), "RGB").convert("RGBA")
 
 
-EMOTES = ["Привет", "Пока", "Помахать", "Поклон", "Отдатьчесть", "Спасибо",
-          "Аплодисменты", "Ура", "Смех", "Улыбка", "Танец", "Мускулы",
-          "Поцелуй", "Обнять", "Пожатьплечами", "Извинить", "Плакать",
-          "Рычать", "Сесть", "Наколени", "Лечь", "Спать", "Указать",
-          "Молиться"]
-COLS, ROWS, CELL_W, CELL_H, PAD, SEARCH_H = 3, 8, 120, 20, 10, 22
+EMOTES = ["Поздороваться", "Попрощаться", "Помахать", "Поклониться",
+          "Отдать честь", "Поблагодарить", "Аплодировать", "Ликовать",
+          "Смеяться", "Улыбнуться", "Танцевать", "Напрячь мускулы",
+          "Поцеловать", "Обнять", "Пожать плечами", "Просить прощения",
+          "Плакать", "Взреветь", "Сесть", "Встать на колени", "Лечь",
+          "Спать", "Указать", "Молиться"]
+COLS, ROWS, CELL_W, CELL_H, PAD, SEARCH_H = 3, 8, 144, 20, 10, 22
+HINT_H = 12                 # strip under the grid, so the hint clears the names
 
 
 def render_picker():
     """The emote list, laid out exactly as the addon lays it out."""
     panel = read_blp("Panel")
     w = COLS * CELL_W + PAD * 2
-    h = PAD * 2 + SEARCH_H + 6 + ROWS * CELL_H
+    h = PAD * 2 + SEARCH_H + 6 + ROWS * CELL_H + HINT_H
     out = np.zeros((h, w, 4))
     nine_slice(out, panel, 0, 0, w, h)
 
@@ -192,7 +219,8 @@ def render_picker():
     small = ImageFont.truetype(FONT_BOLD, 10)
     hint = "колесо — прокрутка"
     hw = d.textbbox((0, 0), hint, font=small)[2]
-    d.text((w - PAD - 2 - hw, h - PAD - 4), hint, font=small, fill=(128, 128, 140, 255))
+    d.text((w - PAD - 2 - hw, h - PAD - HINT_H + 1), hint, font=small,
+           fill=(128, 128, 140, 255))
     return img
 
 

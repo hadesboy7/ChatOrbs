@@ -21,12 +21,15 @@ local ORB_STEP   = 26           -- centre-to-centre spacing
 local DOCK_INNER = 6            -- padding between the orbs and the dock edge
 local DOCK_H     = ORB_SIZE + DOCK_INNER * 2
 local HIT_SIZE   = 24           -- clickable area per orb
-local GLOW_SIZE  = 34
+local GLOW_SIZE  = 30           -- kept under DOCK_H, so a hover glow stays
+                                -- inside the dock instead of haloing the
+                                -- orbs next to it
 -- Every size here is even, so that snapping the dock to half a pixel per unit
 -- still lands each edge on a whole physical pixel.
 local MARKER_W, MARKER_H = 14, 4
 local CORNER     = 12           -- nine-slice corner, in screen pixels
 local CAPTION_SIZE = 12
+local CAPTION_SIZE_WIDE = 10    -- two characters (Гр, Ги, Оф, channel 10)
 local HOVER_TIME = 0.10         -- seconds for the hover transition
 
 local TEX = "Interface\\AddOns\\ChatOrbs\\Textures\\"
@@ -120,6 +123,18 @@ local function LowerText(s)
     return table.concat(out)
 end
 
+--- Number of characters, not bytes: a two-letter Cyrillic caption is four
+--- bytes long, and the caption font size is picked by character count.
+local function TextLength(s)
+    if type(s) ~= "string" then return 0 end
+    local count, i = 0, 1
+    while i <= #s do
+        i = i + CharLen(s, i)
+        count = count + 1
+    end
+    return count
+end
+
 local function FirstChar(s)
     if type(s) ~= "string" or s == "" then return "?" end
     return UpperChar(strsub(s, 1, CharLen(s, 1)))
@@ -131,6 +146,17 @@ local function SetSolid(texture, r, g, b, a)
     else
         texture:SetTexture(r, g, b, a)
     end
+end
+
+--- Applies a font, dropping back to a font object only when the client
+--- really refused it. SetFont answers with a boolean on some clients and with
+--- nothing on others, so a nil answer must not be read as failure: doing that
+--- threw away every requested size and silently used the fallback instead.
+local function ApplyFont(region, path, size, flags, fallbackObject)
+    local ok, applied = pcall(region.SetFont, region, path, size, flags)
+    if ok and applied ~= false then return true end
+    region:SetFontObject(fallbackObject)
+    return false
 end
 
 local function UpperFirst(s)
@@ -230,10 +256,17 @@ end
 -- ---------------------------------------------------------------------------
 -- Fixed chat targets. `label` names the globals the caption letter comes from
 -- (ruRU: Сказать -> С, Крик -> К, Шепот -> Ш, Эмоция -> Э).
+--
+-- THIS LIST IS THE ORDER OF THE ROW. Say first, then Party, then Yell, then
+-- the rest; numbered channels are appended after it by AddChannelEntries.
+-- Nothing else in the addon sorts the orbs, so moving a line here moves the
+-- orb, and the tooltips and the active-channel marker follow along.
 -- ---------------------------------------------------------------------------
 local STATIC_ENTRIES = {
     { chatType = "SAY",           slash = { "SLASH_SAY1" },
       label = { "SAY" },                                      fallback = "Say" },
+    { chatType = "PARTY",         slash = { "SLASH_PARTY1" },
+      label = { "PARTY" },          available = InGroup,      fallback = "Party" },
     { chatType = "YELL",          slash = { "SLASH_YELL1" },
       label = { "YELL" },                                     fallback = "Yell" },
     { chatType = "EMOTE",         slash = { "SLASH_EMOTE1" },
@@ -243,8 +276,6 @@ local STATIC_ENTRIES = {
     { chatType = "BN_WHISPER",    slash = { "SLASH_BNWHISPER1", "SLASH_WHISPER1" },
       label = { "BN_WHISPER", "BATTLENET_WHISPER", "WHISPER" },
       needsTarget = true,           available = HasBattlenet, fallback = "Whisper" },
-    { chatType = "PARTY",         slash = { "SLASH_PARTY1" },
-      label = { "PARTY" },          available = InGroup,      fallback = "Party" },
     { chatType = "RAID",          slash = { "SLASH_RAID1" },
       label = { "RAID" },           available = InRaid,       fallback = "Raid" },
     { chatType = "INSTANCE_CHAT", slash = { "SLASH_INSTANCE_CHAT1" },
@@ -258,21 +289,105 @@ local STATIC_ENTRIES = {
 
 -- On the ruRU client some of these globals do not start with the letter
 -- players know the channel by: SAY comes out as Р, and the Battle.net whisper
--- as О, which then collides with Офицерский and Общий. The chat edit box
--- itself says "Сказать", so for Russian the captions follow the edit box
--- rather than the global. Every other locale derives them as before.
+-- as О. The chat edit box itself says "Сказать", so for Russian the captions
+-- follow the edit box rather than the global. Every other locale derives them
+-- as before.
+--
+-- First letters alone are not enough: Группа and Гильдия are both Г, Шепот
+-- and Шепот Battle.net are both Ш, and Офицерский used to collide with the
+-- Общий channel. Those four get two characters each (drawn one point
+-- smaller), the Battle.net whisper gets Б, and numbered channels are captioned
+-- with their number - which is what you type anyway. No two orbs can read
+-- the same now.
 local RU_LABELS = {
-    SAY           = { "С", "Сказать" },
-    YELL          = { "К", "Крик" },
-    EMOTE         = { "Э", "Эмоция" },
-    WHISPER       = { "Ш", "Шепот" },
-    BN_WHISPER    = { "Ш", "Шепот Battle.net" },
-    PARTY         = { "Г", "Группа" },
-    RAID          = { "Р", "Рейд" },
-    INSTANCE_CHAT = { "П", "Подземелье" },
-    GUILD         = { "Г", "Гильдия" },
-    OFFICER       = { "О", "Офицерский" },
+    SAY           = { "С",  "Сказать" },
+    YELL          = { "К",  "Крик" },
+    EMOTE         = { "Э",  "Эмоция" },
+    WHISPER       = { "Ш",  "Шепот" },
+    BN_WHISPER    = { "Б",  "Шепот Battle.net" },
+    PARTY         = { "Гр", "Группа" },
+    RAID          = { "Р",  "Рейд" },
+    INSTANCE_CHAT = { "П",  "Подземелье" },
+    GUILD         = { "Ги", "Гильдия" },
+    OFFICER       = { "Оф", "Офицерский" },
 }
+
+-- ---------------------------------------------------------------------------
+-- Sticky channel
+--
+-- Where the edit box reopens is decided by two things. `stickyType`, an
+-- attribute on the box, is what the client's own Enter handler puts back into
+-- `chatType` once the line has been sent. `ChatTypeInfo[type].sticky` is the
+-- same idea for the slash commands the player types by hand, and it is the
+-- checkbox in the game's chat settings. Clicking an orb used to set `chatType`
+-- only, so the next Enter went back to whatever the client had sticky - Say,
+-- as a rule. With the option on, an orb click sets both, and the box reopens
+-- in the channel last written to.
+--
+-- Yell and Emote are left out on purpose: making them sticky is how a whole
+-- conversation ends up yelled across the zone.
+-- ---------------------------------------------------------------------------
+local STICKY_TYPES = {
+    SAY = true, PARTY = true, RAID = true, INSTANCE_CHAT = true,
+    GUILD = true, OFFICER = true, WHISPER = true, BN_WHISPER = true,
+    CHANNEL = true,
+}
+
+local savedSticky   -- the client's own flags, kept so the option can be undone
+
+--- Mirrors the option onto ChatTypeInfo, so a hand-typed /g sticks as well.
+local function ApplyStickyFlags()
+    local info = _G.ChatTypeInfo
+    if type(info) ~= "table" then
+        -- Not an error worth a message: without ChatTypeInfo there are no
+        -- flags to set, and the stickyType attribute the orbs rely on is set
+        -- separately in OpenChatFor.
+        return
+    end
+    if ChatOrbsDB and ChatOrbsDB.sticky then
+        if not savedSticky then
+            savedSticky = {}
+            for key in pairs(STICKY_TYPES) do
+                local entry = info[key]
+                if type(entry) == "table" then
+                    -- `false` stands for "was not set at all", so turning the
+                    -- option off restores that rather than writing a 0. It is
+                    -- spelled out because `cond and false or x` can never
+                    -- yield false in Lua.
+                    if entry.sticky == nil then
+                        savedSticky[key] = false
+                    else
+                        savedSticky[key] = entry.sticky
+                    end
+                end
+            end
+        end
+        for key in pairs(STICKY_TYPES) do
+            local entry = info[key]
+            if type(entry) == "table" then entry.sticky = 1 end
+        end
+    elseif savedSticky then
+        for key, value in pairs(savedSticky) do
+            local entry = info[key]
+            if type(entry) == "table" then
+                if value == false then
+                    entry.sticky = nil
+                else
+                    entry.sticky = value
+                end
+            end
+        end
+        savedSticky = nil
+    end
+end
+
+--- Remembers the channel an orb just opened, so Enter comes back to it.
+local function RememberSticky(editBox, chatType)
+    if not (ChatOrbsDB and ChatOrbsDB.sticky) then return end
+    if not STICKY_TYPES[chatType] then return end
+    if not editBox.SetAttribute then return end
+    editBox:SetAttribute("stickyType", chatType)
+end
 
 -- ---------------------------------------------------------------------------
 -- Chat edit box
@@ -336,6 +451,7 @@ local function OpenChatFor(entry)
         elseif target then
             editBox:SetAttribute("tellTarget", target)
         end
+        RememberSticky(editBox, chatType)
         pcall(updateHeader, editBox)
         ChatOrbs:UpdateMarker()
         return
@@ -358,6 +474,7 @@ local function OpenChatFor(entry)
         if chatType == "CHANNEL" then
             editBox:SetAttribute("channelTarget", entry.channelId)
         end
+        RememberSticky(editBox, chatType)
         if updateHeader then pcall(updateHeader, editBox) end
     end
     ChatOrbs:UpdateMarker()
@@ -390,7 +507,9 @@ local function AddChannelEntries(out)
                     chatType  = "CHANNEL",
                     channelId = id,
                     colorKey  = "CHANNEL" .. id,
-                    caption   = FirstChar(name),
+                    -- The number, not the first letter: it never collides
+                    -- with another orb and it is what /1, /2 ... already say.
+                    caption   = tostring(id),
                     title     = id .. ". " .. name,
                     slashText = "/" .. id,
                 }
@@ -570,8 +689,193 @@ local EMOTE_FAVOURITES = {
 
 local emoteList
 
---- The visible name of an emote, taken from the client's own slash commands.
-local function EmoteLabel(index, token)
+--- Russian names for the emotes.
+---
+--- The list used to show the client's own slash commands, and those read
+--- badly: they are written as one glued word ("/отдатьчесть" -> "Отдатьчесть",
+--- "/пожатьплечами" -> "Пожатьплечами") and they mix nouns with verbs, so
+--- "Танец" sat next to "Плакать". Every name here is an infinitive, spelled
+--- out with spaces, which makes the whole list read the same way. A token that
+--- is not listed still shows the client's own wording, so nothing disappears
+--- from the list, and the client's wording stays searchable either way.
+local EMOTE_RU = {
+    AGREE          = "Согласиться",
+    AMAZE          = "Изумиться",
+    ANGRY          = "Злиться",
+    APOLOGIZE      = "Извиниться",
+    APPLAUD        = "Аплодировать",
+    ATTACKMYTARGET = "Указать цель",
+    BASHFUL        = "Смущаться",
+    BECKON         = "Поманить",
+    BEG            = "Умолять",
+    BITE           = "Укусить",
+    BLEED          = "Кровоточить",
+    BLINK          = "Моргнуть",
+    BLUSH          = "Покраснеть",
+    BOGGLE         = "Опешить",
+    BONK           = "Стукнуть себя",
+    BORED          = "Скучать",
+    BOUNCE         = "Подпрыгивать",
+    BOW            = "Поклониться",
+    BRANDISH       = "Потрясти оружием",
+    BURP           = "Рыгнуть",
+    BYE            = "Попрощаться",
+    CACKLE         = "Хохотать",
+    CALM           = "Успокоить",
+    CHARGE         = "Ринуться в бой",
+    CHEER          = "Ликовать",
+    CHICKEN        = "Кудахтать",
+    CHUCKLE        = "Хмыкнуть",
+    COLD           = "Мёрзнуть",
+    COMFORT        = "Утешить",
+    COMMEND        = "Похвалить",
+    CONFUSED       = "Растеряться",
+    CONGRATULATE   = "Поздравить",
+    COUGH          = "Кашлять",
+    COWER          = "Съёжиться",
+    CRACK          = "Размять костяшки",
+    CRY            = "Плакать",
+    CUDDLE         = "Приласкать",
+    CURIOUS        = "Любопытствовать",
+    CURTSEY        = "Сделать реверанс",
+    DANCE          = "Танцевать",
+    DRINK          = "Пить",
+    DROOL          = "Пускать слюни",
+    DUCK           = "Пригнуться",
+    EAT            = "Есть",
+    EYE            = "Разглядывать",
+    FART           = "Испортить воздух",
+    FIDGET         = "Переминаться",
+    FLEE           = "Убегать",
+    FLEX           = "Напрячь мускулы",
+    FLIRT          = "Флиртовать",
+    FLOP           = "Повалиться",
+    FOLLOW         = "Следовать",
+    FROWN          = "Нахмуриться",
+    GASP           = "Ахнуть",
+    GAZE           = "Засмотреться",
+    GIGGLE         = "Хихикать",
+    GLARE          = "Сверкнуть глазами",
+    GLOAT          = "Злорадствовать",
+    GOLFCLAP       = "Вежливо похлопать",
+    GREET          = "Поприветствовать",
+    GRIN           = "Ухмыльнуться",
+    GROAN          = "Застонать",
+    GROVEL         = "Пасть ниц",
+    GROWL          = "Зарычать",
+    GUFFAW         = "Расхохотаться",
+    HAIL           = "Окликнуть",
+    HAPPY          = "Радоваться",
+    HEALME         = "Просить лечения",
+    HELLO          = "Поздороваться",
+    HELPME         = "Просить помощи",
+    HICCUP         = "Икать",
+    HIGHFIVE       = "Дать пять",
+    HUG            = "Обнять",
+    HUNGRY         = "Проголодаться",
+    IMPATIENT      = "Нетерпеливо ждать",
+    INCOMING       = "Предупредить",
+    INSULT         = "Оскорбить",
+    INTRODUCE      = "Представиться",
+    JK             = "Пошутить",
+    KISS           = "Поцеловать",
+    KNEEL          = "Встать на колени",
+    LAUGH          = "Смеяться",
+    LAYDOWN        = "Лечь",
+    LICK           = "Лизнуть",
+    LISTEN         = "Прислушаться",
+    LOST           = "Заблудиться",
+    LOVE           = "Признаться",
+    MASSAGE        = "Размять плечи",
+    MOAN           = "Томно стонать",
+    MOCK           = "Насмехаться",
+    MOO            = "Мычать",
+    MOURN          = "Скорбеть",
+    NERVOUS        = "Нервничать",
+    NO             = "Отказаться",
+    NOSEPICK       = "Ковырять в носу",
+    OOM            = "Кончилась мана",
+    OPENFIRE       = "Открыть огонь",
+    PANIC          = "Паниковать",
+    PEER           = "Вглядываться",
+    PET            = "Погладить",
+    PITY           = "Жалеть",
+    PLEAD          = "Молить",
+    POINT          = "Указать",
+    POKE           = "Толкнуть",
+    PONDER         = "Задуматься",
+    POUNCE         = "Прыгнуть",
+    PRAISE         = "Воздать хвалу",
+    PRAY           = "Молиться",
+    PURR           = "Мурлыкать",
+    PUZZLE         = "Недоумевать",
+    QUESTION       = "Спросить",
+    RAISE          = "Поднять руку",
+    READ           = "Читать",
+    READY          = "Быть готовым",
+    ROAR           = "Взреветь",
+    ROFL           = "Валяться от смеха",
+    RUDE           = "Нагрубить",
+    SALUTE         = "Отдать честь",
+    SCARED         = "Испугаться",
+    SCRATCH        = "Почесаться",
+    SEXY           = "Соблазнять",
+    SHIMMY         = "Трястись",
+    SHIVER         = "Дрожать",
+    SHOO           = "Прогонять",
+    SHRUG          = "Пожать плечами",
+    SHY            = "Стесняться",
+    SIGH           = "Вздохнуть",
+    SILLY          = "Дурачиться",
+    SIT            = "Сесть",
+    SLAP           = "Дать пощёчину",
+    SLEEP          = "Спать",
+    SMELL          = "Принюхаться",
+    SMILE          = "Улыбнуться",
+    SMIRK          = "Усмехнуться",
+    SNARL          = "Огрызнуться",
+    SNICKER        = "Посмеиваться",
+    SNIFF          = "Шмыгнуть носом",
+    SNUB           = "Пренебречь",
+    SOOTHE         = "Приободрить",
+    SORRY          = "Просить прощения",
+    SPIT           = "Плюнуть",
+    STAND          = "Встать",
+    STARE          = "Уставиться",
+    SURPRISED      = "Удивиться",
+    SURRENDER      = "Сдаться",
+    TALK           = "Говорить",
+    TALKEX         = "Восклицать",
+    TAP            = "Постукивать ногой",
+    TAUNT          = "Подначивать",
+    TEASE          = "Поддразнить",
+    THANK          = "Поблагодарить",
+    THIRSTY        = "Хотеть пить",
+    THREATEN       = "Угрожать",
+    TICKLE         = "Пощекотать",
+    TIRED          = "Устать",
+    TRAIN          = "Изобразить поезд",
+    TRUCE          = "Просить мира",
+    TWIDDLE        = "Теребить",
+    VETO           = "Возразить",
+    VICTORY        = "Торжествовать",
+    VIOLIN         = "Играть на скрипке",
+    WAIT           = "Просить подождать",
+    WAVE           = "Помахать",
+    WELCOME        = "Радушно встретить",
+    WHINE          = "Хныкать",
+    WHISTLE        = "Свистеть",
+    WICKED         = "Злобно скалиться",
+    WINK           = "Подмигнуть",
+    WORK           = "Работать",
+    YAWN           = "Зевать",
+    YES            = "Кивнуть",
+}
+ChatOrbs.emoteNames = EMOTE_RU
+
+--- The wording the client itself uses for an emote, from its slash commands.
+--- It is the search needle, and the label for an emote EMOTE_RU misses.
+local function ClientEmoteText(index)
     local best
     for n = 1, 4 do
         local cmd = _G["EMOTE" .. index .. "_CMD" .. n]
@@ -583,11 +887,21 @@ local function EmoteLabel(index, token)
                 -- some emotes; an English word in the middle of a Russian list
                 -- reads like a bug, so prefer the Cyrillic one.
                 local lead = strbyte(text, 1)
-                if isRU and lead and lead >= 0xC0 then return UpperFirst(text) end
+                if isRU and lead and lead >= 0xC0 then return text end
             end
         end
     end
-    return UpperFirst(best or strlower(token))
+    return best
+end
+
+--- One list entry: the name shown, plus everything it can be found by.
+local function EmoteEntry(index, token)
+    local clientText = ClientEmoteText(index)
+    local label = isRU and EMOTE_RU[token] or nil
+    if not label then label = UpperFirst(clientText or strlower(token)) end
+    local search = LowerText(label) .. " " .. strlower(token)
+    if clientText then search = search .. " " .. LowerText(clientText) end
+    return { token = token, label = label, search = search }
 end
 
 --- Every emote the client knows: the favourites first, then the rest in
@@ -600,12 +914,7 @@ local function BuildEmoteList()
     for i = 1, 1000 do
         local token = _G["EMOTE" .. i .. "_TOKEN"]
         if type(token) == "string" and token ~= "" and not byToken[token] then
-            local label = EmoteLabel(i, token)
-            local entry = {
-                token = token,
-                label = label,
-                search = LowerText(label) .. " " .. strlower(token),
-            }
+            local entry = EmoteEntry(i, token)
             byToken[token] = entry
             found[#found + 1] = entry
         end
@@ -631,7 +940,7 @@ local function BuildEmoteList()
     -- A client with no emote globals at all still gets a usable list.
     if #emoteList == 0 then
         for _, token in ipairs(EMOTE_FAVOURITES) do
-            local label = UpperFirst(strlower(token))
+            local label = (isRU and EMOTE_RU[token]) or UpperFirst(strlower(token))
             emoteList[#emoteList + 1] = {
                 token = token, label = label, search = LowerText(label),
             }
@@ -641,7 +950,10 @@ local function BuildEmoteList()
 end
 
 local EMOTE_COLS, EMOTE_ROWS = 3, 8
-local EMOTE_CELL_W, EMOTE_CELL_H, EMOTE_PAD, EMOTE_SEARCH_H = 120, 20, 10, 22
+local EMOTE_CELL_W, EMOTE_CELL_H, EMOTE_PAD, EMOTE_SEARCH_H = 144, 20, 10, 22
+-- A strip under the grid for the scroll hint. Without it the hint was drawn
+-- over the bottom row of names.
+local EMOTE_HINT_H = 12
 
 local picker, pickerBlocker
 local pickerCells, pickerMatches, pickerOffset = {}, {}, 0
@@ -707,13 +1019,20 @@ local function CreatePicker()
     picker = CreateFrame("Frame", "ChatOrbsEmotePicker", UIParent)
     picker:SetFrameStrata("DIALOG")
     picker:SetWidth(EMOTE_COLS * EMOTE_CELL_W + EMOTE_PAD * 2)
-    picker:SetHeight(EMOTE_PAD * 2 + EMOTE_SEARCH_H + 6 + EMOTE_ROWS * EMOTE_CELL_H)
+    picker:SetHeight(EMOTE_PAD * 2 + EMOTE_SEARCH_H + 6
+                     + EMOTE_ROWS * EMOTE_CELL_H + EMOTE_HINT_H)
     picker:EnableMouse(true)
     picker:EnableMouseWheel(true)
+    -- The list is wider than the dock, so near a screen edge it would
+    -- otherwise hang off it.
+    picker:SetClampedToScreen(true)
     picker:Hide()
 
     picker.panel = CreatePanel(picker)
     picker.panel:SetAllPoints(picker)
+    -- The panel is the backdrop. Pin it below the cells instead of trusting
+    -- the order the frames happened to be created in.
+    picker.panel:SetFrameLevel(max(1, picker:GetFrameLevel()))
     picker.panel:Restyle(ChatOrbsDB and ChatOrbsDB.flat)
 
     local fontPath, fontFlags
@@ -730,9 +1049,7 @@ local function CreatePicker()
     search:SetPoint("TOPRIGHT", picker, "TOPRIGHT", -EMOTE_PAD, -EMOTE_PAD)
     search:SetAutoFocus(false)
     search:SetTextInsets(7, 7, 0, 0)
-    if not search:SetFont(fontPath, 11, fontFlags) then
-        search:SetFontObject("GameFontHighlightSmall")
-    end
+    ApplyFont(search, fontPath, 11, fontFlags, "GameFontHighlightSmall")
     search:SetTextColor(1, 1, 1)
     local searchBg = search:CreateTexture(nil, "BACKGROUND")
     searchBg:SetAllPoints(search)
@@ -740,9 +1057,7 @@ local function CreatePicker()
     picker.search = search
 
     local hint = search:CreateFontString(nil, "OVERLAY")
-    if not hint:SetFont(fontPath, 11, fontFlags) then
-        hint:SetFontObject("GameFontDisableSmall")
-    end
+    ApplyFont(hint, fontPath, 11, fontFlags, "GameFontDisableSmall")
     hint:SetPoint("LEFT", search, "LEFT", 7, 0)
     hint:SetText(T("поиск эмоции", "search emotes"))
     hint:SetTextColor(0.55, 0.55, 0.6)
@@ -769,6 +1084,7 @@ local function CreatePicker()
         local col = (index - 1) % EMOTE_COLS
         local row = floor((index - 1) / EMOTE_COLS)
         local cell = CreateFrame("Button", nil, picker)
+        cell:SetFrameLevel(picker:GetFrameLevel() + 2)
         cell:SetWidth(EMOTE_CELL_W)
         cell:SetHeight(EMOTE_CELL_H)
         cell:SetPoint("TOPLEFT", picker, "TOPLEFT",
@@ -780,9 +1096,7 @@ local function CreatePicker()
         SetSolid(highlight, 1, 1, 1, 0.12)
 
         local text = cell:CreateFontString(nil, "OVERLAY")
-        if not text:SetFont(fontPath, 11, fontFlags) then
-            text:SetFontObject("GameFontHighlightSmall")
-        end
+        ApplyFont(text, fontPath, 11, fontFlags, "GameFontHighlightSmall")
         text:SetPoint("LEFT", cell, "LEFT", 8, 0)
         text:SetWidth(EMOTE_CELL_W - 14)
         text:SetJustifyH("LEFT")
@@ -799,19 +1113,16 @@ local function CreatePicker()
     end
 
     picker.empty = picker:CreateFontString(nil, "OVERLAY")
-    if not picker.empty:SetFont(fontPath, 11, fontFlags) then
-        picker.empty:SetFontObject("GameFontDisableSmall")
-    end
+    ApplyFont(picker.empty, fontPath, 11, fontFlags, "GameFontDisableSmall")
     picker.empty:SetPoint("TOPLEFT", picker, "TOPLEFT", EMOTE_PAD + 8, -(gridTop + 4))
     picker.empty:SetText(T("ничего не найдено", "nothing found"))
     picker.empty:SetTextColor(0.6, 0.6, 0.65)
     picker.empty:Hide()
 
     picker.more = picker:CreateFontString(nil, "OVERLAY")
-    if not picker.more:SetFont(fontPath, 10, fontFlags) then
-        picker.more:SetFontObject("GameFontDisableSmall")
-    end
-    picker.more:SetPoint("BOTTOMRIGHT", picker, "BOTTOMRIGHT", -EMOTE_PAD - 2, 3)
+    ApplyFont(picker.more, fontPath, 10, fontFlags, "GameFontDisableSmall")
+    picker.more:SetPoint("BOTTOMRIGHT", picker, "BOTTOMRIGHT",
+                         -EMOTE_PAD - 2, EMOTE_PAD - 1)
     picker.more:SetText(T("колесо — прокрутка", "scroll for more"))
     picker.more:SetTextColor(0.5, 0.5, 0.55)
     picker.more:Hide()
@@ -870,6 +1181,10 @@ ChatOrbs.frame = dock
 
 local dockPanel = CreatePanel(dock)
 dockPanel:SetAllPoints(dock)
+-- Backdrop below, orbs above (CreateButton raises them). Without this the
+-- draw order is whatever the creation order gives, which is not something to
+-- rely on.
+dockPanel:SetFrameLevel(max(1, dock:GetFrameLevel()))
 
 local marker = dock:CreateTexture(nil, "OVERLAY")
 marker:SetWidth(MARKER_W)
@@ -999,28 +1314,44 @@ local function OnButtonClick(self, mouseButton)
     OpenChatFor(entry)
 end
 
-local function StyleButton(button, flat)
+--- Applies the look and the channel colour together.
+---
+--- The colour has to go in here rather than being set afterwards: on clients
+--- where SetColorTexture doubles as the vertex colour, a SetVertexColor made
+--- before it is thrown away, which is why every orb in texture-free mode came
+--- out white instead of taking its channel colour.
+local function StyleButton(button, flat, r, g, b)
+    r, g, b = r or 1, g or 1, b or 1
     if flat then
-        for _, tex in ipairs({ button.orb, button.sheen, button.glow }) do
-            if tex.SetColorTexture then
-                tex:SetColorTexture(1, 1, 1, 1)
-            else
-                tex:SetTexture(1, 1, 1, 1)
-            end
-        end
+        button.orb:SetVertexColor(1, 1, 1)
+        SetSolid(button.orb, r, g, b, 1)
         button.sheen:Hide()
         button.glow:Hide()
     else
         button.orb:SetTexture(TEX_ORB)
+        button.orb:SetVertexColor(r, g, b)
         button.sheen:SetTexture(TEX_SHEEN)
         button.glow:SetTexture(TEX_GLOW)
+        button.glow:SetVertexColor(r, g, b)
         button.sheen:Show()
         button.glow:Show()
     end
 end
 
+--- Two-character captions (Гр, Ги, Оф, channel 10) are drawn a point smaller
+--- so they still fit inside the orb.
+local function ApplyCaption(button, text)
+    button.caption:SetText(text)
+    local size = (TextLength(text) > 1) and CAPTION_SIZE_WIDE or CAPTION_SIZE
+    if button.captionSize ~= size then
+        ApplyFont(button.caption, captionFont, size, captionFlags, "GameFontNormal")
+        button.captionSize = size
+    end
+end
+
 local function CreateButton(index)
     local button = CreateFrame("Button", "ChatOrbsButton" .. index, dock)
+    button:SetFrameLevel(dock:GetFrameLevel() + 2)
     button:SetWidth(HIT_SIZE)
     button:SetHeight(HIT_SIZE)
     button:RegisterForClicks("LeftButtonUp", "RightButtonUp")
@@ -1037,12 +1368,19 @@ local function CreateButton(index)
     button.sheen:SetAlpha(SHEEN_REST)
 
     button.caption = button:CreateFontString(nil, "OVERLAY")
-    if not button.caption:SetFont(captionFont, CAPTION_SIZE, captionFlags) then
-        button.caption:SetFontObject("GameFontNormal")
+    ApplyFont(button.caption, captionFont, CAPTION_SIZE, captionFlags,
+              "GameFontNormal")
+    button.captionSize = CAPTION_SIZE
+    -- The glyph is a darkened version of the channel colour; a light edge
+    -- keeps it legible against the shaded middle of the sphere.
+    if button.caption.SetShadowColor then
+        button.caption:SetShadowColor(1, 1, 1, 0.35)
+        button.caption:SetShadowOffset(1, -1)
     end
 
     button.hoverAmount = 0
-    StyleButton(button, ChatOrbsDB and ChatOrbsDB.flat)
+    -- Rebuild styles and colours the button straight away, so no placeholder
+    -- styling is needed here.
     ApplyVisual(button)
 
     button:RegisterForDrag("LeftButton")
@@ -1072,15 +1410,13 @@ function ChatOrbs:Rebuild()
         button:SetPoint("CENTER", dock, "BOTTOMLEFT",
                         DOCK_INNER + ORB_SIZE / 2 + (index - 1) * ORB_STEP, DOCK_H / 2)
         local r, g, b = ColorFor(entry.colorKey)
-        button.orb:SetVertexColor(r, g, b)
-        button.glow:SetVertexColor(r, g, b)
-        button.caption:SetText(entry.caption)
+        StyleButton(button, flat, r, g, b)
+        ApplyCaption(button, entry.caption)
         button.caption:SetTextColor(r * CAPTION_DARKEN, g * CAPTION_DARKEN,
                                     b * CAPTION_DARKEN)
         button.hoverAmount = 0
         button.pressed = false
         tweening[button] = nil
-        StyleButton(button, flat)
         ApplyVisual(button)
         button:Show()
     end
@@ -1100,6 +1436,10 @@ function ChatOrbs:Rebuild()
     elseif marker.SetColorTexture then
         marker:SetColorTexture(1, 1, 1, 1)
     end
+    -- The buttons were just re-pointed at new entries, so the remembered key
+    -- no longer says which orb the marker belongs under, and its colour may
+    -- have just been reset. Force a fresh lookup.
+    self.markerKey = nil
     self:UpdateMarker()
 end
 
@@ -1220,10 +1560,22 @@ local function Print(msg)
     if frame then frame:AddMessage("|cffffd100ChatOrbs|r " .. msg) end
 end
 
+local function OnOff(value)
+    if value then return T("вкл", "on") end
+    return T("выкл", "off")
+end
+
 local function PrintHelp()
     Print(T("доступные команды:", "available commands:"))
+    local sticky = ChatOrbsDB and ChatOrbsDB.sticky
     local lines = {
         { "/chatorbs",         T("список команд.", "show this list.") },
+        { "/chatorbs sticky",  T("залипание канала: после Enter строка ввода "
+                                 .. "снова открывается в том же канале (сейчас: "
+                                 .. OnOff(sticky) .. ").",
+                                 "sticky channel: after Enter the edit box "
+                                 .. "reopens in the same channel (now: "
+                                 .. OnOff(sticky) .. ").") },
         { "/chatorbs lock",    T("запретить перемещение.", "lock the dock in place.") },
         { "/chatorbs unlock",  T("разрешить перемещение.", "allow dragging the dock.") },
         { "/chatorbs reset",   T("вернуть положение и масштаб по умолчанию.",
@@ -1268,7 +1620,8 @@ local function HandleSlash(input)
     elseif command == "scale" then
         local value = tonumber(argument)
         if not value then
-            Print(T("текущий масштаб: ", "current scale: ") .. tostring(dock:GetScale()))
+            Print(T("текущий масштаб: ", "current scale: ")
+                  .. string.format("%.3f", dock:GetScale() or 1))
         elseif value < MIN_SCALE or value > MAX_SCALE then
             Print(T("масштаб должен быть от 0.5 до 3.",
                     "scale must be between 0.5 and 3."))
@@ -1296,6 +1649,29 @@ local function HandleSlash(input)
         ChatOrbs:ApplyVisibility()
         Print(T("панель показана.", "dock shown."))
 
+    elseif command == "sticky" then
+        if argument == "on" or argument == "вкл" then
+            ChatOrbsDB.sticky = true
+        elseif argument == "off" or argument == "выкл" then
+            ChatOrbsDB.sticky = false
+        else
+            ChatOrbsDB.sticky = not ChatOrbsDB.sticky
+        end
+        ApplyStickyFlags()
+        if ChatOrbsDB.sticky then
+            Print(T("залипание канала включено: написали в группу, нажали "
+                    .. "Enter - строка ввода снова откроется в группу. "
+                    .. "Крик и эмоции остаются разовыми.",
+                    "sticky channel on: write to the party, press Enter and "
+                    .. "the edit box reopens in the party. Yell and emotes "
+                    .. "stay one-shot."))
+        else
+            Print(T("залипание канала выключено: строка ввода возвращается "
+                    .. "к тому, что настроено в самой игре.",
+                    "sticky channel off: the edit box falls back to the "
+                    .. "game's own setting."))
+        end
+
     elseif command == "flat" then
         ChatOrbsDB.flat = not ChatOrbsDB.flat
         ChatOrbs:Rebuild()
@@ -1315,7 +1691,12 @@ end
 -- ---------------------------------------------------------------------------
 -- Events
 -- ---------------------------------------------------------------------------
-local DEFAULTS = { scale = 1, locked = false, hidden = false, flat = false }
+local DEFAULTS = {
+    scale = 1, locked = false, hidden = false, flat = false,
+    -- On by default: this is the behaviour the dock is for, and /chatorbs
+    -- sticky turns it off again.
+    sticky = true,
+}
 
 local events = CreateFrame("Frame")
 
@@ -1350,6 +1731,7 @@ events:SetScript("OnEvent", function(self, event, arg1)
         self:UnregisterEvent("ADDON_LOADED")
 
     elseif event == "PLAYER_LOGIN" then
+        ApplyStickyFlags()
         dock:SetScale(SnapScale(ChatOrbsDB.scale or 1))
         ChatOrbs:RestorePosition()
         ChatOrbs:ApplyLock()
