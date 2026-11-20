@@ -576,16 +576,19 @@ local function visibleLabels()
 end
 
 local labels = visibleLabels()
--- The short list opens on the emotes worth having under the cursor. Сесть
--- is the one reached for most, so it leads, then the laughing ones.
-check(#labels == 24, "the short list shows " .. #labels .. " emotes, expected 24")
+-- The short list runs from the emotes that do a job to the ones that just
+-- make noise. This fixture client has no WAIT and no FOLLOW, so two of the
+-- twenty-four fall out of it - which is the filter working, not a gap.
+check(#labels == 22, "the short list shows " .. #labels .. " emotes, expected 22")
 check(labels[1] == "Сесть", "first emote label is '" .. tostring(labels[1])
       .. "', expected 'Сесть'")
-check(labels[2] == "Смеяться", "second emote label is '" .. tostring(labels[2]) .. "'")
-check(labels[3] == "Валяться от смеха",
-      "third emote label is '" .. tostring(labels[3]) .. "'")
-check(labels[8] == "Танцевать",
-      "eighth emote label is '" .. tostring(labels[8]) .. "', expected 'Танцевать'")
+check(labels[2] == "Плюнуть", "second emote label is '" .. tostring(labels[2]) .. "'")
+check(labels[3] == "Указать", "third emote label is '" .. tostring(labels[3]) .. "'")
+check(labels[18] == "Смеяться",
+      "the laughing emotes are not near the end: 18th is '"
+      .. tostring(labels[18]) .. "'")
+check(labels[21] == "Танцевать",
+      "21st emote label is '" .. tostring(labels[21]) .. "', expected 'Танцевать'")
 check(pickerFrame.more.shown and pickerFrame.more.text == "остальные эмоции — через поиск",
       "the short list does not say where the other emotes are, it says '"
       .. tostring(pickerFrame.more.text) .. "'")
@@ -627,7 +630,7 @@ typeSearch("щщщ")
 check(#visibleLabels() == 0, "a search with no matches still showed cells")
 check(pickerFrame.empty.shown, "the empty-list notice did not appear")
 typeSearch("")
-check(#visibleLabels() == 24, "clearing the search did not restore the short list")
+check(#visibleLabels() == 22, "clearing the search did not restore the short list")
 check(visibleLabels()[1] == "Сесть", "clearing the search lost the short list")
 
 -- An emote the client gives no command for never reaches the list.
@@ -678,7 +681,24 @@ pcall(pickerFrame.scripts.OnMouseWheel, pickerFrame, 40)   -- back to the top
 check(visibleLabels()[1] == "Сесть", "scrolling back up did not restore the top")
 pcall(env.SlashCmdList["CHATORBS"], "emotes short")
 check(env.ChatOrbsDB.allEmotes == false, "'emotes short' did not switch back")
-check(#visibleLabels() == 24, "the short list did not come back")
+check(#visibleLabels() == 22, "the short list did not come back")
+
+-- The self-check: the addon says what this client knows, what fell out of
+-- the short list, and which names wandered off the client's own word.
+local checkFrom = #chatLog
+pcall(env.SlashCmdList["CHATORBS"], "emotes check")
+local report = table.concat(chatLog, "\n", checkFrom + 1)
+check(report:find("в коротком списке: 22 из 24", 1, true) ~= nil,
+      "the check did not count the short list: " .. report)
+check(report:find("WAIT", 1, true) ~= nil and report:find("FOLLOW", 1, true) ~= nil,
+      "the check did not name the emotes this client lacks: " .. report)
+check(report:find("Танцевать (/танец)", 1, true) ~= nil,
+      "the check did not flag a name that differs from the client's word: "
+      .. report)
+check(report:find("Сесть (", 1, true) == nil,
+      "the check flagged a name that matches the client's word: " .. report)
+check(env.ChatOrbsDB.allEmotes == false,
+      "'emotes check' switched the list instead of just reporting")
 
 -- Renaming must not cost the player the word the client uses: searching by
 -- the client's own command still finds the emote.
@@ -691,13 +711,13 @@ check(visibleLabels()[1] == "Отдать честь", "searching by the English
 typeSearch("")
 -- Hovering a cell names the command it will run and the token behind it,
 -- so an emote that misbehaves can be reported without guesswork.
-pcall(cells[8].scripts.OnEnter, cells[8])
+pcall(cells[21].scripts.OnEnter, cells[21])
 check(tooltipLines[1] == "Танцевать", "the cell tooltip does not name the emote")
 check(tooltipLines[2] == "/танец",
       "the cell tooltip does not show the client's command")
 check(tooltipLines[3] == "DANCE", "the cell tooltip does not show the token")
-pcall(cells[8].scripts.OnLeave, cells[8])
-pcall(cells[8].scripts.OnClick, cells[8])
+pcall(cells[21].scripts.OnLeave, cells[21])
+pcall(cells[21].scripts.OnClick, cells[21])
 check(emotesPerformed[#emotesPerformed] == "DANCE",
       "clicking an emote performed '"
       .. tostring(emotesPerformed[#emotesPerformed]) .. "'")
@@ -709,7 +729,7 @@ brokenEmotes["DANCE"] = true
 local before = #chatLog
 editBox:SetText("недописанная строка")
 click(3)
-pcall(cells[8].scripts.OnClick, cells[8])
+pcall(cells[21].scripts.OnClick, cells[21])
 check(slashRun[#slashRun] == "/танец",
       "a refused emote did not fall back to its command, ran '"
       .. tostring(slashRun[#slashRun]) .. "'")
@@ -724,7 +744,7 @@ check(chatLog[#chatLog]:find("DANCE", 1, true) ~= nil
       "the message does not say which emote broke and what was run instead: "
       .. tostring(chatLog[#chatLog]))
 click(3)
-pcall(cells[8].scripts.OnClick, cells[8])
+pcall(cells[21].scripts.OnClick, cells[21])
 check(#chatLog == before + 1, "the same broken emote was reported twice")
 check(slashRun[#slashRun] == "/танец", "the second click did not run the command")
 brokenEmotes["DANCE"] = nil

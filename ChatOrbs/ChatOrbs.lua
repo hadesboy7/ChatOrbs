@@ -682,22 +682,28 @@ end
 -- Emotes
 -- ---------------------------------------------------------------------------
 -- The emotes worth having under the cursor. Exactly 24, which is one full
--- screen of the list, so the short view needs no scrolling at all. Сесть
--- comes first because that is the one reached for most, then laughing. The
--- order here is the order on screen, read left to right.
+-- screen of the list, so the short view needs no scrolling at all.
+--
+-- The order runs from the ones that do a job to the ones that just make
+-- noise: sitting and spitting first, dancing and laughing last. Read left
+-- to right, that is the order on screen.
 --
 -- Everything else the client knows is one keystroke away: typing in the
--- search box searches the lot, and /chatorbs emotes switches the list to
--- the full set for good.
+-- search box searches the lot, /chatorbs emotes switches the list to the
+-- full set for good, and /chatorbs emotes check says which of these the
+-- client actually knows.
 local EMOTE_IMPORTANT = {
-    "SIT", "LAUGH", "ROFL",
-    "GIGGLE", "SMILE", "CHEER",
-    "APPLAUD", "DANCE", "HELLO",
-    "WAVE", "BYE", "THANK",
-    "BOW", "YES", "NO",
-    "SORRY", "CONGRATULATE", "HUG",
-    "SHRUG", "CRY", "POINT",
-    "SLEEP", "FLEX", "SALUTE",
+    -- работа: что делаешь по ходу игры
+    "SIT", "SPIT", "POINT",
+    "WAIT", "FOLLOW", "SLEEP",
+    "YES", "NO", "SORRY",
+    -- общение: что говоришь людям
+    "HELLO", "BYE", "WAVE",
+    "THANK", "BOW", "SALUTE",
+    "CONGRATULATE", "CHEER", "APPLAUD",
+    -- веселье: что льётся в чат просто так
+    "SMILE", "LAUGH", "ROFL",
+    "GIGGLE", "DANCE", "RUDE",
 }
 
 local emoteList
@@ -968,6 +974,65 @@ local function BuildEmoteList()
         end
     end
     return emoteList
+end
+
+--- Says which of the short list this client actually knows, and where a
+--- Russian name departs from the client's own word.
+---
+--- There is no way to check an emote from outside the game, so the addon
+--- checks itself: an emote the client has no command for never reaches the
+--- list, and this names the ones that fell out and the names worth a second
+--- look.
+local function CheckEmotes()
+    local all = BuildEmoteList()
+    local known = {}
+    for _, entry in ipairs(all) do known[entry.token] = entry end
+
+    local missing, drifted = {}, {}
+    for _, token in ipairs(EMOTE_IMPORTANT) do
+        local entry = known[token]
+        if not entry then
+            missing[#missing + 1] = token
+        elseif entry.command then
+            local name = (LowerText(entry.label):gsub("[%s%-]", ""))
+            local word = (LowerText(entry.command):gsub("[%s%-]", ""))
+            if not name:find(word, 1, true) and not word:find(name, 1, true) then
+                drifted[#drifted + 1] = entry.label .. " (/" .. entry.command .. ")"
+            end
+        end
+    end
+
+    -- Five to a line, and the heading said once: a report that repeats its
+    -- own title on every line reads as spam.
+    local function PrintList(heading, list)
+        Print(heading)
+        local line, count = nil, 0
+        for _, item in ipairs(list) do
+            line = line and (line .. ", " .. item) or ("  " .. item)
+            count = count + 1
+            if count % 5 == 0 then
+                Print(line)
+                line = nil
+            end
+        end
+        if line then Print(line) end
+    end
+
+    Print(T("эмоций с командой в клиенте: ", "emotes with a command here: ")
+          .. #all .. ".")
+    Print(T("в коротком списке: ", "in the short list: ")
+          .. (#EMOTE_IMPORTANT - #missing) .. T(" из ", " of ")
+          .. #EMOTE_IMPORTANT .. ".")
+    if #missing > 0 then
+        PrintList(T("клиент не знает: ", "this client does not know: "), missing)
+    end
+    if #drifted > 0 then
+        PrintList(T("названия не как у клиента, проверь на глаз: ",
+                    "names that differ from the client's own word: "), drifted)
+    else
+        Print(T("названия совпадают со словами клиента.",
+                "every name matches the client's own word."))
+    end
 end
 
 local EMOTE_COLS, EMOTE_ROWS = 3, 8
@@ -1669,6 +1734,11 @@ local function PrintHelp()
     local full = ChatOrbsDB and ChatOrbsDB.allEmotes
     local lines = {
         { "/chatorbs",         T("список команд.", "show this list.") },
+        { "/chatorbs emotes check",
+                               T("проверить эмоции: сколько их знает клиент, "
+                                 .. "чего нет и какие названия стоит глянуть.",
+                                 "check the emotes: how many the client knows, "
+                                 .. "what is missing, which names to look at.") },
         { "/chatorbs emotes",  T("список эмоций: короткий (нужное) или полный "
                                  .. "(всё, что знает клиент). Сейчас: "
                                  .. (full and "полный" or "короткий") .. ".",
@@ -1755,6 +1825,11 @@ local function HandleSlash(input)
         Print(T("панель показана.", "dock shown."))
 
     elseif command == "emotes" then
+        if argument == "check" or argument == "проверка"
+            or argument == "проверить" then
+            CheckEmotes()
+            return
+        end
         if argument == "all" or argument == "все" or argument == "полный" then
             ChatOrbsDB.allEmotes = true
         elseif argument == "short" or argument == "короткий" then
